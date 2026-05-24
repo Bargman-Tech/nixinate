@@ -35,7 +35,7 @@
               inherit (final.lib) getExe getExe' optionalString concatStringsSep escapeShellArg elem;
               nix = "${getExe final.nix}";
               nixos-rebuild = "${getExe final.nixos-rebuild}";
-              openssh = "${getExe final.openssh} -p ${port} -t ${safe_target_host}";
+              openssh = "${getExe final.openssh} ${sshVerbosity} -p ${port} -t ${safe_target_host}";
               lolcat_cmd = "${getExe final.lolcat} -p 3 -F 0.02";
               figlet_cmd = "${getExe final.figlet}";
               sem = "${getExe' final.parallel "sem"} --will-cite --line-buffer";
@@ -50,7 +50,10 @@
               hermetic = if isCrossArch then false else (parameters.hermetic or true);
               user = if (parameters ? sshUser && parameters.sshUser != null) then parameters.sshUser else (builtins.abort "sshUser must be set in _module.args.nixinate");
               host = if parameters ? host then parameters.host else builtins.abort "host must be set in _module.args.nixinate";
-              debug = if (parameters ? debug && parameters.debug) then "set -x;" else "";
+              isDebug = parameters ? debug && parameters.debug;
+              debug = if isDebug then "set -x; export DEBUG=true;" else "";
+              verboseFlag = if isDebug then "--verbose" else "";
+              sshVerbosity = if isDebug then "-vvv" else "";
               where = if parameters ? buildOn then (if elem parameters.buildOn ["local" "remote"] then parameters.buildOn else builtins.abort "_module.args.nixinate.buildOn must be 'local' or 'remote'") else "local";
               nixOptionsList = if parameters ? nixOptions then (if builtins.isList parameters.nixOptions then (if builtins.all builtins.isString parameters.nixOptions then parameters.nixOptions else builtins.abort "_module.args.nixinate.nixOptions must be a list of strings") else builtins.abort "_module.args.nixinate.nixOptions must be a list") else [];
               port = toString (parameters.port or 22);
@@ -60,8 +63,9 @@
               safe_target = escapeShellArg target;
               safe_target_host = escapeShellArg target_host;
               safe_ssh_uri = escapeShellArg ssh_uri;
+              system_toplevel = escapeShellArg "${target}.config.system.build.toplevel";
               logFile = "/tmp/deploy-${machine}.log";
-              ssh_options = "NIX_SSHOPTS=\"-p ${port}\"";
+               ssh_options = "NIX_SSHOPTS=\"${sshVerbosity} -p ${port}\"";
               hermeticOpensshCmd = ''sudo nix-store --realise ${safe_nixos_rebuild} --realise ${safe_parallel} && sudo ${sem} --id "nixinate-${machine}" --semaphore-timeout 60 --fg "${safe_nixos_rebuild} ${nixOptions} $sw --flake ${safe_target}"'';
               nonHermeticOpensshCmd = ''sudo ${sem} --id "nixinate-${machine}" --semaphore-timeout 60 --fg "${safe_nixos_rebuild} ${nixOptions} $sw --flake ${safe_target}"'';
               remote = if where == "remote" then true else if where == "local" then false else builtins.abort "_module.args.nixinate.buildOn is not either 'local' or 'remote'";
@@ -78,24 +82,34 @@
                    echo "${where} build : mode $sw  ${if hermetic then "hermetic active" else ""}" | ${figlet_cmd} | ${lolcat_cmd}
                  '';
 
-                remoteCopy = if remote then ''
-                  echo "Sending flake to ${machine} via nix copy:"
-                  ( ${debug} ${ssh_options} ${nix} ${buildersOption} ${nixOptions} copy ${safe_flake} --to ${safe_ssh_uri} )
-                '' else "";
+            remoteCopy = if remote then ''
+               echo "=== [COPY START] $(date) Sending flake to ${machine} via nix copy ==="
+               ( ${debug} ${ssh_options} ${nix} ${buildersOption} ${verboseFlag} ${nixOptions} copy ${safe_flake} --to ${safe_ssh_uri} )
+               echo "=== [COPY END]   $(date) ==="
+            '' else "";
 
-                hermeticActivation = if hermetic then ''
-                  echo "Activating configuration hermetically on ${machine} via ssh:"
-                    ( ${debug} ${ssh_options} nix ${buildersOption} ${nixOptions} copy --derivation ${safe_nixos_rebuild} --derivation ${safe_parallel} --to ${safe_ssh_uri} )
-                    ( ${debug} ${openssh} ${hermeticOpensshCmd} )
-                '' else ''
-                  echo "Activating configuration non-hermetically on ${machine} via ssh:"
-                    ( ${openssh} ${nonHermeticOpensshCmd} )
-                '';
+           hermeticActivation = if hermetic then ''
+              echo "=== [CLOSE COPY START] $(date) Hermetic closure copy start ==="
+                ( ${debug} ${ssh_options} ${nix} ${buildersOption} ${verboseFlag} ${nixOptions} copy --derivation ${safe_nixos_rebuild} --derivation ${safe_parallel} --to ${safe_ssh_uri} )
+              echo "=== [CLOSE COPY END]   $(date) ==="
+              echo "=== [ACTIVATION START] $(date) Activating configuration hermetically on ${machine} via ssh ==="
+                ( ${debug} ${openssh} ${hermeticOpensshCmd} )
+              echo "=== [ACTIVATION END]   $(date) ==="
+           '' else ''
+              echo "Activating configuration non-hermetically on ${machine} via ssh:"
+                ( ${openssh} ${nonHermeticOpensshCmd} )
+            '';
 
-                 activation = if remote then remoteCopy + hermeticActivation else ''
-                   echo "Building system closure locally, copying it to remote store and activating it:"
-                     ( ${debug} ${ssh_options} ${sem} --id "nixinate-${machine}" --semaphore-timeout 60 --fg "${safe_nixos_rebuild} ${nixOptions} \"$sw\" --flake ${safe_target} --target-host ${safe_target_host} --sudo ${optionalString substituteOnTarget "-s"}" )
-                 '';
+             activation = if remote then remoteCopy + hermeticActivation else ''
+               echo "=== [PRE-COPY START] $(date) Pre-copying system closure to ${machine} ==="
+               echo "Building and copying system closure to remote store (visible progress):"
+                ( ${debug} ${ssh_options} ${nix} ${buildersOption} ${verboseFlag} ${nixOptions} copy ${system_toplevel} --to ${safe_ssh_uri} )
+               echo "=== [PRE-COPY END]   $(date) ==="
+               echo "=== [DEPLOY START] $(date) Activating ${machine} via nixos-rebuild ==="
+               echo "Running nixos-rebuild $sw on remote (closure already transferred):"
+                ( ${debug} ${ssh_options} ${sem} --id "nixinate-${machine}" --semaphore-timeout 60 --fg "${safe_nixos_rebuild} ${nixOptions} \"$sw\" --flake ${safe_target} --target-host ${safe_target_host} --sudo ${optionalString substituteOnTarget "-s"}" )
+                echo "=== [DEPLOY END]   $(date) ==="
+             '';
             in 
 	    	final.writeShellApplication 
 	    	{

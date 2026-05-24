@@ -162,3 +162,62 @@ Connection to itchy.scratchy.com closed.
 * No Premature Optimization: Make it work, then optimize it later if the
   optimization is taking a lot of time to figure out now.
 * KISS: Keep it simple, stupid. Unnecesary complexity should be avoided.
+
+# Hermetic Deployments and the Future of Nixinate
+
+## What is Hermetic Mode?
+
+When `hermetic = true` is set in your nixinate configuration, nixinate copies a
+specific version of Nix itself to the remote host before running `nixos-rebuild`.
+This means the remote system uses the **same Nix version as the deployer**, not
+whatever version happens to be installed on the target.
+
+The hermetic path works as follows:
+
+1. The flake source is copied to the remote via `nix copy`.
+2. The `nixos-rebuild` and `sem` (GNU Parallel) derivations are copied to the
+   remote via `nix copy --derivation`.
+3. An SSH session executes `nixos-rebuild` on the remote using the copied Nix
+   binary, with `--flake` pointing at the copied flake source.
+
+This ensures the remote never evaluates or builds with an unexpected Nix version.
+
+## Why Hermetic Matters
+
+The original purpose of hermetic mode was to enable **deployment onto systems
+that are otherwise past their deployment lifetime**. Consider a NixOS 21.11
+machine that needs to be upgraded to 25.11: the remote's installed Nix may be
+too old to evaluate the new flake, or may lack support for features the new
+configuration depends on.
+
+Hermetic mode solves this by decoupling the deploy target's Nix version from its
+installed Nix version. The deployer brings its own Nix, ensuring consistent
+evaluation regardless of what the remote already has.
+
+## Current Status
+
+Hermetic mode is currently **functional but secondary** to the local-build path.
+The local-build path (which includes a visible pre-copy step as of this version)
+is the recommended default because it provides clear progress output and is
+simpler to debug.
+
+The hermetic path does not yet include the same pre-copy visibility
+enhancements. Contributions to bring the hermetic path to parity are welcome.
+
+## Make Nixinate Great Again (MNGA)
+
+The long-term goal is to restore hermetic mode as a first-class deployment
+strategy with the following properties:
+
+* **Fully self-contained transfers**: The deployer copies everything needed
+  (Nix, nixos-rebuild, parallel, and the system closure) to the remote in a
+  single visible pipeline, with progress output at every stage.
+* **Legacy system support**: Deploy cleanly onto NixOS systems running versions
+  as old as 21.11, or even non-NixOS systems with a minimal Nix installation.
+* **Deterministic evaluation**: The remote always evaluates with the deployer's
+  Nix version, eliminating environment-specific build differences.
+* **Resilient transfers**: If a transfer is interrupted, resume from where it
+  left off rather than restarting from scratch.
+
+These goals align with nixinate's core principle: make deployment simple,
+reliable, and observable. Patches and RFCs toward this vision are welcome.
