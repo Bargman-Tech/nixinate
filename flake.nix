@@ -63,9 +63,9 @@
               safe_target = escapeShellArg target;
               safe_target_host = escapeShellArg target_host;
               safe_ssh_uri = escapeShellArg ssh_uri;
-              system_toplevel = escapeShellArg "${target}.config.system.build.toplevel";
-              logFile = "/tmp/deploy-${machine}.log";
-               ssh_options = "NIX_SSHOPTS=\"${sshVerbosity} -p ${port}\"";
+              system_toplevel = escapeShellArg "${flake}#nixosConfigurations.${machine}.config.system.build.toplevel";
+               logFile = "/tmp/deploy-${machine}.log";
+               ssh_options = "NIX_SSHOPTS=\"${optionalString isDebug "${sshVerbosity} "} -p ${port}\"";
               hermeticOpensshCmd = ''sudo nix-store --realise ${safe_nixos_rebuild} --realise ${safe_parallel} && sudo ${sem} --id "nixinate-${machine}" --semaphore-timeout 60 --fg "${safe_nixos_rebuild} ${nixOptions} $sw --flake ${safe_target}"'';
               nonHermeticOpensshCmd = ''sudo ${sem} --id "nixinate-${machine}" --semaphore-timeout 60 --fg "${safe_nixos_rebuild} ${nixOptions} $sw --flake ${safe_target}"'';
               remote = if where == "remote" then true else if where == "local" then false else builtins.abort "_module.args.nixinate.buildOn is not either 'local' or 'remote'";
@@ -103,7 +103,7 @@
              activation = if remote then remoteCopy + hermeticActivation else ''
                echo "=== [PRE-COPY START] $(date) Pre-copying system closure to ${machine} ==="
                echo "Building and copying system closure to remote store (visible progress):"
-                ( ${debug} ${ssh_options} ${nix} ${buildersOption} ${verboseFlag} ${nixOptions} copy ${system_toplevel} --to ${safe_ssh_uri} )
+                ( ${debug} ${ssh_options} ${nix} ${buildersOption} ${verboseFlag} ${nixOptions} copy "$(${nix} build --print-out-paths --no-link ${system_toplevel})" --to ${safe_ssh_uri} )
                echo "=== [PRE-COPY END]   $(date) ==="
                echo "=== [DEPLOY START] $(date) Activating ${machine} via nixos-rebuild ==="
                echo "Running nixos-rebuild $sw on remote (closure already transferred):"
