@@ -41,6 +41,7 @@
               sem = "${getExe' final.parallel "sem"} --will-cite --line-buffer";
               semCleanup = "${getExe' final.parallel "sem"} --will-cite";
               stdbuf = "${getExe' final.coreutils "stdbuf"}";
+              flock = "${getExe' final.util-linux "flock"}";
               safe_flake = escapeShellArg flake;
               safe_parallel = escapeShellArg "${getExe' final.parallel "sem"}";
               buildersOption = "--option builders ''";
@@ -119,8 +120,8 @@
                 ( ${debug} ${ssh_options} ${nix} ${verboseFlag} ${nixOptions} copy "$(${nix} build --print-out-paths --no-link ${system_toplevel})" --to ${safe_ssh_uri} )
                echo "=== [PRE-COPY END]   $(date) ==="
                echo "=== [DEPLOY START] $(date) Activating ${machine} via nixos-rebuild ==="
-               echo "Running nixos-rebuild $sw on remote (closure already transferred):"
-                ( ${debug} ${ssh_options} ${stdbuf} -oL ${sem} --id "nixinate-${machine}" --semaphore-timeout 60 --fg "${safe_nixos_rebuild} ${nixOptions} \"$sw\" --flake ${safe_target} --target-host ${safe_target_host} --sudo ${optionalString substituteOnTarget "-s"}" )
+                echo "Running nixos-rebuild $sw on remote (closure already transferred):"
+                 ( ${debug} exec 9>"/tmp/nixinate-${machine}.lock"; ${flock} -w 60 9; ${ssh_options} ${stdbuf} -oL ${safe_nixos_rebuild} ${nixOptions} "$sw" --flake ${safe_target} --target-host ${safe_target_host} --sudo ${optionalString substituteOnTarget "-s"} )
                 echo "=== [DEPLOY END]   $(date) ==="
              '';
             in 
@@ -135,21 +136,11 @@ main() {
   # at import time based on TMPDIR, and nested nix-shell temp paths
   # produce socket paths that exceed the limit.
   export TMPDIR="/tmp"
-  # Use a known semaphore home to avoid missing-home-directory issues
-  export PARALLEL_HOME="/tmp/.parallel-nixinate"
-  _sem_id="nixinate-${machine}"
-  # shellcheck disable=SC2329  # invoked indirectly via trap
-  _sem_cleanup() {
-    ${semCleanup} --id "$_sem_id" --semaphore-timeout 5 --wait 2>/dev/null || true
-  }
-  trap _sem_cleanup EXIT INT TERM HUP
-  # Purge any stale semaphore from a previous interrupted run
-  ${semCleanup} --id "$_sem_id" --semaphore-timeout 2 --wait 2>/dev/null || true
 '' + header + activation + ''
 }
 main "$@" 2>&1 | tee ${logFile}
 '';
-          runtimeInputs = with final; [ figlet lolcat coreutils ];
+          runtimeInputs = with final; [ figlet lolcat coreutils util-linux ];
 	     	};
           in
           nixpkgs.lib.genAttrs
