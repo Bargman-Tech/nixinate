@@ -39,6 +39,7 @@
               lolcat_cmd = "${getExe final.lolcat} -p 3 -F 0.02";
               figlet_cmd = "${getExe final.figlet}";
               sem = "${getExe' final.parallel "sem"} --will-cite --line-buffer";
+              semCleanup = "${getExe' final.parallel "sem"} --will-cite";
               stdbuf = "${getExe' final.coreutils "stdbuf"}";
               safe_flake = escapeShellArg flake;
               safe_parallel = escapeShellArg "${getExe' final.parallel "sem"}";
@@ -134,6 +135,15 @@ main() {
   # at import time based on TMPDIR, and nested nix-shell temp paths
   # produce socket paths that exceed the limit.
   export TMPDIR="/tmp"
+  # Use a known semaphore home to avoid missing-home-directory issues
+  export PARALLEL_HOME="/tmp/.parallel-nixinate"
+  _sem_id="nixinate-${machine}"
+  _sem_cleanup() {
+    ${semCleanup} --id "$_sem_id" --semaphore-timeout 5 --wait 2>/dev/null || true
+  }
+  trap _sem_cleanup EXIT INT TERM HUP
+  # Purge any stale semaphore from a previous interrupted run
+  ${semCleanup} --id "$_sem_id" --semaphore-timeout 2 --wait 2>/dev/null || true
 '' + header + activation + ''
 }
 main "$@" 2>&1 | tee ${logFile}
