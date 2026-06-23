@@ -41,6 +41,34 @@
               sem = "${getExe' final.parallel "sem"} --will-cite --line-buffer";
               semCleanup = "${getExe' final.parallel "sem"} --will-cite";
               stdbuf = "${getExe' final.coreutils "stdbuf"}";
+              gawk = "${getExe final.gawk}";
+              progressAwk = final.writeText "progress.awk" ''
+                /copying [0-9]+ paths/ {
+                  split($0, a, " ")
+                  if (a[2] > 0) totals = a[2]
+                  print
+                  next
+                }
+                /copying path / {
+                  done++
+                  if (totals > 0) {
+                    pct = int(done / totals * 100)
+                    bar = ""
+                    for (i = 0; i < 40; i++) bar = bar ((i < pct * 40 / 100) ? "#" : ".")
+                    printf "\r\033[K %3d%% |%s| %d/%d paths", pct, bar, done, totals > "/dev/stderr"
+                  }
+                  print
+                  next
+                }
+                { print }
+                END {
+                  if (totals > 0) {
+                    bar = ""
+                    for (i = 0; i < 40; i++) bar = bar ((i < done / totals * 40 / 100) ? "#" : ".")
+                    printf "\r\033[K %3d%% |%s| %d/%d paths\n", int(done / totals * 100), bar, done, totals > "/dev/stderr"
+                  }
+                }
+              '';
               safe_flake = escapeShellArg flake;
               safe_parallel = escapeShellArg "${getExe' final.parallel "sem"}";
               buildersOption = "--option builders ''";
@@ -165,9 +193,9 @@ main() {
   trap 'rm -rf "$_lockdir" 2>/dev/null' EXIT INT TERM HUP
 '' + header + activation + ''
 }
-main "$@" 2>&1 | tee ${logFile}
+main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
 '';
-          runtimeInputs = with final; [ figlet lolcat coreutils ];
+          runtimeInputs = with final; [ figlet lolcat coreutils gawk ];
 	     	};
           in
           nixpkgs.lib.genAttrs
