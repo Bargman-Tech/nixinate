@@ -41,7 +41,6 @@
               sem = "${getExe' final.parallel "sem"} --will-cite --line-buffer";
               semCleanup = "${getExe' final.parallel "sem"} --will-cite";
               stdbuf = "${getExe' final.coreutils "stdbuf"}";
-              flock = "${getExe' final.util-linux "flock"}";
               safe_flake = escapeShellArg flake;
               safe_parallel = escapeShellArg "${getExe' final.parallel "sem"}";
               buildersOption = "--option builders ''";
@@ -114,16 +113,16 @@
                 ( ${openssh} ${nonHermeticOpensshCmd} )
             '';
 
-             activation = if remote then remoteCopy + hermeticActivation else ''
-               echo "=== [PRE-COPY START] $(date) Pre-copying system closure to ${machine} ==="
-               echo "Building and copying system closure to remote store (visible progress):"
-                ( ${debug} ${ssh_options} ${nix} ${verboseFlag} ${nixOptions} copy "$(${nix} build --print-out-paths --no-link ${system_toplevel})" --to ${safe_ssh_uri} )
-               echo "=== [PRE-COPY END]   $(date) ==="
-               echo "=== [DEPLOY START] $(date) Activating ${machine} via nixos-rebuild ==="
+              activation = if remote then remoteCopy + hermeticActivation else ''
+                echo "=== [PRE-COPY START] $(date) Pre-copying system closure to ${machine} ==="
+                echo "Building and copying system closure to remote store (visible progress):"
+                 ( ${debug} ${ssh_options} ${nix} ${verboseFlag} ${nixOptions} copy "$(${nix} build --print-out-paths --no-link ${system_toplevel})" --to ${safe_ssh_uri} )
+                echo "=== [PRE-COPY END]   $(date) ==="
+                echo "=== [DEPLOY START] $(date) Activating ${machine} via nixos-rebuild ==="
                 echo "Running nixos-rebuild $sw on remote (closure already transferred):"
-                 ( ${debug} exec 9>"/tmp/nixinate-${machine}.lock"; ${flock} -w 60 9; ${ssh_options} ${stdbuf} -oL ${safe_nixos_rebuild} ${nixOptions} "$sw" --flake ${safe_target} --target-host ${safe_target_host} --sudo ${optionalString substituteOnTarget "-s"} )
+                 ( ${debug} ${ssh_options} ${stdbuf} -oL ${safe_nixos_rebuild} ${nixOptions} "$sw" --flake ${safe_target} --target-host ${safe_target_host} --sudo ${optionalString substituteOnTarget "-s"} )
                 echo "=== [DEPLOY END]   $(date) ==="
-             '';
+              '';
             in 
 	    	final.writeShellApplication 
 	    	{
@@ -136,11 +135,39 @@ main() {
   # at import time based on TMPDIR, and nested nix-shell temp paths
   # produce socket paths that exceed the limit.
   export TMPDIR="/tmp"
+  # --- Deployment lock (atomic mkdir) ---
+  # TODO(nixinate): Replace with sem --semaphore when GNU Parallel
+  # supports a hold-without-command semaphore mode. The --fg path
+  # calls setpgrp(0,0) which puts nixos-rebuild/ssh in a background
+  # process group, causing SIGTTIN on ssh -t terminal access.
+  _lockdir="/tmp/nixinate-${machine}.lock"
+  _lock_timeout=60
+  _lock_waited=0
+  while ! mkdir "$_lockdir" 2>/dev/null; do
+    if [ -f "$_lockdir/pid" ]; then
+      _lock_pid=$(cat "$_lockdir/pid" 2>/dev/null)
+      if [ -n "$_lock_pid" ] && ! kill -0 "$_lock_pid" 2>/dev/null; then
+        echo "Removing stale deployment lock (PID $_lock_pid died)" >&2
+        rm -rf "$_lockdir" 2>/dev/null
+        continue
+      fi
+    fi
+    sleep 0.5
+    _lock_waited=$((_lock_waited + 1))
+    if [ $_lock_waited -ge $((_lock_timeout * 2)) ]; then
+      echo "WARNING: Could not acquire deployment lock after $_lock_timeout s, forcing through" >&2
+      rm -rf "$_lockdir" 2>/dev/null
+      mkdir "$_lockdir" 2>/dev/null || true
+      break
+    fi
+  done
+  echo $$ > "$_lockdir/pid"
+  trap 'rm -rf "$_lockdir" 2>/dev/null' EXIT INT TERM HUP
 '' + header + activation + ''
 }
 main "$@" 2>&1 | tee ${logFile}
 '';
-          runtimeInputs = with final; [ figlet lolcat coreutils util-linux ];
+          runtimeInputs = with final; [ figlet lolcat coreutils ];
 	     	};
           in
           nixpkgs.lib.genAttrs
