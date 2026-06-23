@@ -138,6 +138,7 @@ main() {
   # Use a known semaphore home to avoid missing-home-directory issues
   export PARALLEL_HOME="/tmp/.parallel-nixinate"
   _sem_id="nixinate-${machine}"
+  # shellcheck disable=SC2329  # invoked indirectly via trap
   _sem_cleanup() {
     ${semCleanup} --id "$_sem_id" --semaphore-timeout 5 --wait 2>/dev/null || true
   }
