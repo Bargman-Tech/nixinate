@@ -93,17 +93,19 @@ attrset, parallel to generateApps:
   generateImages = flake:
     let
       machines = builtins.attrNames flake.nixosConfigurations;
-      validMachines = final.lib.filter (x: x != "")
-        (final.lib.forEach machines (x:
-          final.lib.optionalString
-            (flake.nixosConfigurations."${x}"._module.args ? nixinate) "${x}"));
+      validMachines = final.lib.remove "" (final.lib.forEach machines (x:
+        final.lib.optionalString
+          (flake.nixosConfigurations."${x}"._module.args ? nixinate) "${x}"));
     in
       final.lib.genAttrs validMachines (machine: {
         # Stub — filled in subsequent phases
       });
 
-NOTE: Use final.lib.filter + final.lib.forEach (NOT lib.remove which doesn't exist).
-The stub returns an empty attrset per machine for now.
+NOTE: Use final.lib.remove "" (final.lib.forEach ...) — this is the EXACT
+pattern from the existing codebase at flake.nix:33. Do NOT use lib.filter
+(lib.forEach + optionalString returns a concatenated string, not a list,
+so lib.filter would operate on characters). lib.remove "" strips the empty
+string results from the concatenation.
 
 Commit: "feat: add genImages library function skeleton parallel to genDeploy"
 ```
@@ -300,8 +302,7 @@ Follow the same pattern as generateApps — read from flake.nixosConfigurations:
 generateImages = flake:
   let
     machines = builtins.attrNames flake.nixosConfigurations;
-    validMachines = final.lib.filter (x: x != "")
-      (final.lib.forEach machines (x:
+    validMachines = final.lib.remove "" (final.lib.forEach machines (x:
         final.lib.optionalString
           (flake.nixosConfigurations."${x}"._module.args ? nixinate) "${x}"));
     mkImagePackages = machine:
