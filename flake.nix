@@ -218,10 +218,17 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
             validMachines = final.lib.remove "" (final.lib.forEach machines (x:
               final.lib.optionalString
                 (flake.nixosConfigurations."${x}"._module.args ? nixinate) "${x}"));
+            mkImagePackages = machine:
+              let
+                userConfig = flake.nixosConfigurations.${machine};
+                imagesConfig = userConfig._module.args.nixinate.images or {};
+                rawEnabled = imagesConfig.raw.enable or true;
+              in
+                (if rawEnabled then {
+                  "${machine}-raw-image" = userConfig.config.system.build.diskoImages;
+                } else {});
           in
-            final.lib.genAttrs validMachines (machine: {
-              # Stub — filled in subsequent phases
-            });
+            builtins.foldl' (a: b: a // b) {} (builtins.map mkImagePackages validMachines);
         };
     };
 }
