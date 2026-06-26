@@ -227,6 +227,15 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                 qemuEnabled = imagesConfig.qemu.enable or false;
                 isoEnabled = imagesConfig.iso.enable or false;
 
+                # Size validation
+                sizeLib = import ./lib/closure-size.nix { inherit (final) lib; };
+                parseSize = sizeLib.nixinate.lib.parseSize;
+                imageSizeBytes = parseSize (imagesConfig.raw.imageSize or "20G");
+                espSizeBytes = parseSize (imagesConfig.raw.espSize or "1024M");
+                swapSizeBytes = parseSize (imagesConfig.raw.swapSize or "8G");
+                rootSizeBytes = imageSizeBytes - espSizeBytes - swapSizeBytes;
+                sizeValid = rootSizeBytes > 0;
+
                 # Installer is a SEPARATE system — not the user's config
                 installerDerivedConfig = if installerEnabled then
                   (nixpkgs.lib.nixosSystem {
@@ -301,7 +310,7 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                 else null;
               in
                 (if rawEnabled then {
-                  "${machine}-raw-image" = userConfig.config.system.build.diskoImages;
+                  "${machine}-raw-image" = assert sizeValid; userConfig.config.system.build.diskoImages;
                   "${machine}-raw-image-zstd" = rawImageZstd;
                 } else {})
                 // (if installerEnabled then {
