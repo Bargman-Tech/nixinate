@@ -224,6 +224,8 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                 imagesConfig = userConfig._module.args.nixinate.images or {};
                 rawEnabled = imagesConfig.raw.enable or true;
                 installerEnabled = imagesConfig.installer.enable or true;
+                qemuEnabled = imagesConfig.qemu.enable or false;
+                isoEnabled = imagesConfig.iso.enable or false;
 
                 # Installer is a SEPARATE system — not the user's config
                 installerDerivedConfig = if installerEnabled then
@@ -282,6 +284,21 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                     '';
                   }
                 else null;
+
+                # QEMU QCOW2 image (requires qemu-guest profile in user config)
+                qemu-image = if qemuEnabled then
+                  userConfig.config.system.build.images.qemu
+                else null;
+
+                # Bootable ISO image (standalone nixosSystem with installercd profile)
+                iso-image = if isoEnabled then
+                  (nixpkgs.lib.nixosSystem {
+                    system = final.system;
+                    modules = [
+                      "${nixpkgs}/nixos/modules/profiles/installercd.nix"
+                    ];
+                  }).config.system.build.images.iso
+                else null;
               in
                 (if rawEnabled then {
                   "${machine}-raw-image" = userConfig.config.system.build.diskoImages;
@@ -298,6 +315,12 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                       --post-format-files ${rawImageZstd}/image.raw.zst install/image.raw.zst
                     cp autoinstaller.raw "$out/installer.raw"
                   '';
+                } else {})
+                // (if qemuEnabled then {
+                  "${machine}-qemu-image" = qemu-image;
+                } else {})
+                // (if isoEnabled then {
+                  "${machine}-iso-image" = iso-image;
                 } else {});
           in
             builtins.foldl' (a: b: a // b) {} (builtins.map mkImagePackages validMachines);
