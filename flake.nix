@@ -2,8 +2,12 @@
   description = "Nixinate your systems";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
-  outputs = { self, nixpkgs, ... }:
+  outputs = { self, nixpkgs, disko, ... }:
     let
       # some basic carte-blance tooling to handle valid archtectures.
       version = builtins.substring 0 8 self.lastModifiedDate;
