@@ -66,7 +66,7 @@ images = {
 ```
 
 These extensions are explicitly deferred. v1 uses hardcoded sane defaults
-(matching the Dubai reference implementation).
+(matching the reference implementation).
 
 ---
 
@@ -240,13 +240,13 @@ boot.loader.grub = {
 ```
 
 The user's `nixosConfiguration` may include custom GRUB theming (e.g.,
-`grub-theme-cinematic` from dubai-assets). Nixinate's installer module
+custom grub theme from branding assets). Nixinate's installer module
 sets the minimum required GRUB config and lets the user's config take
 precedence for theming.
 
 ### Auto-DD Script
 
-Based on the working Dubai implementation (`shell/auto-dd-install.sh`).
+Based on the working reference implementation (`shell/auto-dd-install.sh`).
 Key behaviours:
 - Stops display manager, Plymouth, background services for maximum I/O
 - Validates target device (not mounted, not current root, size check)
@@ -282,7 +282,7 @@ Key files:
 - `shell/auto-dd-install.sh` — dd + post-processing script
 - `machines/cinnamon/` and `machines/cinnamon-mac/` — desktop configs
 
-The Dubai implementation produces:
+The reference implementation produces:
 - `cinnamon-pc-demo-disk-image` — raw disko image
 - `cinnamon-pc-installer-zstd-image` — zstd-compressed payload
 - `cinnamon-pc-auto-installer-disk-image` — bootable installer with embedded payload
@@ -356,7 +356,7 @@ The Dubai implementation produces:
    has its own `_module.args.nixinate.images` block. No coupling between machines.
 
 3. **Image naming convention?** `<machine>-raw-image`, `<machine>-installer-image`,
-   etc. Consistent with Dubai reference implementation.
+   etc. Consistent with reference implementation.
 
 4. **CI/CD integration?** Images are buildable packages. CI can `nix build` them
    directly. No special nixinate CI support needed.
@@ -373,4 +373,4 @@ The Dubai implementation produces:
 - [DD installer adversarial analysis](/speed-storage/opencode/llm/shared/dd-installer-adversarial-analysis.md)
 - [QEMU test harness plan](/speed-storage/opencode/llm/shared/qemu-bargman-test-harness.md)
 - [MNGA plan](docs/MNGA-plan.md) — Phase 5
-- [Dubai reference implementation](/speed-storage/repo/SQUIRGLE_MEN/nix-workstation-image)
+- [Reference implementation](/speed-storage/repo/SQUIRGLE_MEN/nix-workstation-image)
