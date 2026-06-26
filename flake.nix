@@ -223,6 +223,51 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                 userConfig = flake.nixosConfigurations.${machine};
                 imagesConfig = userConfig._module.args.nixinate.images or {};
                 rawEnabled = imagesConfig.raw.enable or true;
+                installerEnabled = imagesConfig.installer.enable or true;
+
+                # Installer is a SEPARATE system — not the user's config
+                installerDerivedConfig = if installerEnabled then
+                  (nixpkgs.lib.nixosSystem {
+                    system = final.system;
+                    modules = [
+                      disko.nixosModules.disko
+                      ./modules/images/default.nix
+                      ./modules/images/installer.nix
+                      ./modules/images/auto-dd.nix
+                      # Minimal disko schema for the installer USB itself
+                      {
+                        disko.devices.disk.autoinstaller = {
+                          device = "/dev/null";
+                          type = "disk";
+                          content = {
+                            type = "gpt";
+                            partitions = {
+                              ESP = {
+                                type = "EF00";
+                                size = "512M";
+                                content = {
+                                  type = "filesystem";
+                                  format = "vfat";
+                                  mountpoint = "/boot";
+                                  mountOptions = [ "umask=0077" ];
+                                };
+                              };
+                              root = {
+                                size = "100%";
+                                content = {
+                                  type = "filesystem";
+                                  format = "ext4";
+                                  mountpoint = "/";
+                                };
+                              };
+                            };
+                          };
+                          imageSize = "7800M";
+                        };
+                      }
+                    ];
+                  })
+                else null;
               in
                 (if rawEnabled then {
                   "${machine}-raw-image" = userConfig.config.system.build.diskoImages;
@@ -237,6 +282,18 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                         ${userConfig.config.system.build.diskoImages}/main.raw
                     '';
                   };
+                } else {})
+                // (if installerEnabled then {
+                  "${machine}-installer-image" = final.runCommand "${machine}-installer-image" {
+                    nativeBuildInputs = [ final.coreutils ];
+                  } ''
+                    mkdir -p "$out"
+                    cp ${installerDerivedConfig.config.system.build.diskoImagesScript} ./disko-image-builder
+                    chmod +x ./disko-image-builder
+                    ./disko-image-builder \
+                      --post-format-files ${self.packages.${final.system}.${machine}-raw-image-zstd}/image.raw.zst install/image.raw.zst
+                    cp autoinstaller.raw "$out/installer.raw"
+                  '';
                 } else {});
           in
             builtins.foldl' (a: b: a // b) {} (builtins.map mkImagePackages validMachines);
