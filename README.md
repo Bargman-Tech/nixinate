@@ -332,6 +332,53 @@ users will be able to deploy to literally any Linux system in the world — bare
 metal, air-gapped, remote — without requiring a nix-daemon or even Nix on the
 target. That's a game-changer.
 
+## Image Generation
+
+Nixinate can generate disk images and bootable installers from your
+nixosConfiguration. Add to your flake:
+
+```nix
+packages = nixinate.lib.genImages.x86_64-linux self;
+```
+
+And import the image module in your nixosConfiguration:
+
+```nix
+imports = [
+  disko.nixosModules.disko
+  nixinate.nixosModules.image-gen
+];
+```
+
+### Available Outputs
+
+| Output | Command | Description |
+|--------|---------|-------------|
+| Raw image | `nix build .#&lt;machine&gt;-raw-image` | dd-able disk image |
+| Compressed | `nix build .#&lt;machine&gt;-raw-image-zstd` | zstd-compressed (level 3) |
+| Installer | `nix build .#&lt;machine&gt;-installer-image` | Bootable USB installer |
+| QEMU | `nix build .#&lt;machine&gt;-qemu-image` | QCOW2 (requires qemu profile) |
+| ISO | `nix build .#&lt;machine&gt;-iso-image` | Bootable ISO |
+
+### Configuration
+
+```nix
+_module.args.nixinate.images = {
+  raw = {
+    enable = true;         # default: true
+    imageSize = "20G";     # default: 20G
+    espSize = "1024M";     # default: 1024M
+    swapSize = "8G";       # default: 8G
+  };
+  installer.enable = true; # default: true
+  qemu.enable = false;     # default: false
+  iso.enable = false;      # default: false
+};
+```
+
+See [`docs/image-generation-plan.md`](docs/image-generation-plan.md) for
+the full architecture and implementation details.
+
 ## Troubleshooting
 
 **Deployment fails with "Nix is too old"**
