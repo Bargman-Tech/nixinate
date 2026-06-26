@@ -1,6 +1,6 @@
 # Image Generation — Implementation Action Plan
 
-**Status:** Ready for execution
+**Status:** Revised (post-adversarial review)
 **Date:** 2026-06-26
 **Branch:** `feat/image-generation`
 **Scope:** Nixinate Phase 5 (MNGA) — Image and Installer Generation
@@ -10,19 +10,34 @@
 ## How This Plan Works
 
 Each phase is broken into individual steps. Each step is a single task for
-`bellana-deepseek`. After each phase, `tpol-minimax` verifies all work in
-that phase before proceeding.
+`bellana-deepseek`. After each phase, `tpol-minimax` verifies all work.
 
 **Execution pattern:**
 1. Give the step prompt to `bellana-deepseek`
 2. Review the output
 3. Commit the step with the specified commit message
-4. After all steps in a phase are complete, give the verification prompt to `tpol-minimax`
-5. If verification passes, tag the phase and move to the next
-6. If verification fails, fix and re-verify before proceeding
+4. After all steps in a phase, give the verification prompt to `tpol-minimax`
+5. If verification passes, tag the phase and proceed
+6. If verification fails, fix and re-verify
 
-**Commit convention:** Each step gets its own commit. Each phase gets a tag
-on successful verification.
+**Commit convention:** Each step gets its own commit. Each phase gets a tag.
+
+---
+
+## Core Architecture Decision
+
+**Raw images read from the user's existing `nixosConfiguration`.**
+The existing `generateApps` reads `flake.nixosConfigurations.${machine}._module.args.nixinate`
+and generates deployment scripts. `generateImages` follows the same pattern — it reads
+`config.system.build.diskoImages` from the user's already-evaluated config.
+
+The user imports `nixinate.nixosModules.image-gen` (which adds disko + default schema)
+into their own `nixosConfiguration`. No derived `nixosSystem` is needed for raw images.
+
+**The installer is a separate `nixosSystem`.** The installer is a genuinely different
+system — minimal boot shell, auto-dd service, embedded payload. It does NOT include
+the user's desktop/apps/auth. It only needs the disko schema for its own disk layout
+and the compressed raw image as a payload.
 
 ---
 
@@ -66,27 +81,36 @@ Add a genImages library function and generateImages overlay entry to
 /speed-storage/repo/DarthPJB/nixinate/flake.nix, parallel to the existing
 genDeploy/generateApps.
 
-1. In the outputs rec block, add after lib.genDeploy:
-   lib.genImages = forAllSystems (system: pkgs: nixpkgsFor.${system}.generateImages);
+The existing pattern is:
+  lib.genDeploy = forAllSystems (system: pkgs: nixpkgsFor.${system}.generateApps);
 
-2. In the overlay (overlays.default), inside the nixinate attrset, add after generateApps:
-   generateImages = flake:
-     let
-       machines = builtins.attrNames flake.nixosConfigurations;
-       validMachines = final.lib.remove "" (final.lib.forEach machines
-         (x: final.lib.optionalString
-           (flake.nixosConfigurations."${x}"._module.args ? nixinate) "${x}"));
-     in
-       nixpkgs.lib.genAttrs validMachines (machine: {
-         # Stub — filled in subsequent phases
-       });
+Follow this EXACTLY for genImages:
+  lib.genImages = forAllSystems (system: pkgs: nixpkgsFor.${system}.generateImages);
+
+In the overlay (overlays.default), add generateImages INSIDE the nixinate
+attrset, parallel to generateApps:
+
+  generateImages = flake:
+    let
+      machines = builtins.attrNames flake.nixosConfigurations;
+      validMachines = final.lib.filter (x: x != "")
+        (final.lib.forEach machines (x:
+          final.lib.optionalString
+            (flake.nixosConfigurations."${x}"._module.args ? nixinate) "${x}"));
+    in
+      final.lib.genAttrs validMachines (machine: {
+        # Stub — filled in subsequent phases
+      });
+
+NOTE: Use final.lib.filter + final.lib.forEach (NOT lib.remove which doesn't exist).
+The stub returns an empty attrset per machine for now.
 
 Commit: "feat: add genImages library function skeleton parallel to genDeploy"
 ```
 
 **Verify:** `nix eval '.#lib.genImages'` returns a function.
 
-### Step 1.3: Create image generation NixOS module options
+### Step 1.3: Create image generation NixOS module
 
 **Agent:** bellana-deepseek
 **Files:** `modules/images/default.nix` (new)
@@ -98,7 +122,10 @@ Create the image generation NixOS module at
 
 Create the directory modules/images/ first.
 
-This module defines the nixinate.images option subtree:
+This module:
+1. Defines nixinate.images options (read by generateImages via _module.args)
+2. When raw images are enabled, imports disko and applies default schema
+3. Bridges _module.args.nixinate.images to config.nixinate.images
 
 { lib, config, ... }:
 let
@@ -167,44 +194,44 @@ Commit: "feat: add nixinate.images NixOS module options (raw/installer/qemu/iso)
 Create the default disko schema module at
 /speed-storage/repo/DarthPJB/nixinate/modules/images/disko-default.nix.
 
-This provides the standard GPT layout when the user hasn't defined disko.devices:
+This provides the standard GPT layout when the user hasn't defined their own
+disko.devices.disk entries. It only applies defaults — the user's config
+takes precedence via NixOS module system (lib.mkDefault).
 
 Partition order: ESP (first, UEFI requirement) → swap → root ext4 (last, expandable)
 
 { lib, config, ... }:
-with lib;
 let
   cfg = config.nixinate.images.raw;
 in
 {
-  disko.devices = mkIf (config.disko.devices == {}) {
-    disk.main = {
-      device = "/dev/null"; # overridden by image builder
-      type = "disk";
-      content = {
-        type = "gpt";
-        partitions = {
-          ESP = {
-            type = "EF00";
-            size = cfg.espSize;
-            content = {
-              type = "filesystem";
-              format = "vfat";
-              mountpoint = "/boot";
-              mountOptions = [ "umask=0077" ];
-            };
+  # Only set defaults — user's own disko.devices overrides these
+  disko.devices.disk.main = lib.mkDefault {
+    device = "/dev/null"; # overridden by image builder
+    type = "disk";
+    content = {
+      type = "gpt";
+      partitions = {
+        ESP = {
+          type = "EF00";
+          size = cfg.espSize;
+          content = {
+            type = "filesystem";
+            format = "vfat";
+            mountpoint = "/boot";
+            mountOptions = [ "umask=0077" ];
           };
-          swap = {
-            size = cfg.swapSize;
-            content = { type = "swap"; };
-          };
-          root = {
-            size = "100%";
-            content = {
-              type = "filesystem";
-              format = "ext4";
-              mountpoint = "/";
-            };
+        };
+        swap = {
+          size = cfg.swapSize;
+          content = { type = "swap"; };
+        };
+        root = {
+          size = "100%";
+          content = {
+            type = "filesystem";
+            format = "ext4";
+            mountpoint = "/";
           };
         };
       };
@@ -212,10 +239,14 @@ in
   };
 }
 
+NOTE: Uses lib.mkDefault on the entire disk attrset, not mkIf on config.disko.devices.
+This means if the user defines their own disko.devices.disk.main, it overrides
+the default cleanly via the module system. No brittle == {} checks.
+
 Commit: "feat: add default disko schema module (GPT: ESP → swap → root ext4)"
 ```
 
-**Verify:** File exists, references cfg.espSize and cfg.swapSize correctly.
+**Verify:** File exists, uses lib.mkDefault correctly.
 
 ### Phase 1 Verification Gate
 
@@ -228,33 +259,19 @@ Verify Phase 1 (Foundation) of the nixinate image generation implementation.
 Working directory: /speed-storage/repo/DarthPJB/nixinate
 Branch: feat/image-generation
 
-Check the following:
+Check:
+1. nix flake check --no-build (flake evaluates)
+2. nix flake metadata --json | jq '.locks.nodes | has("disko")' (disko input exists)
+3. nix eval '.#lib.genImages' (function exists)
+4. cat modules/images/default.nix (options defined, valid Nix)
+5. cat modules/images/disko-default.nix (uses lib.mkDefault, valid Nix)
+6. git status (clean, all committed)
 
-1. Flake evaluates without errors:
-   nix flake check --no-build
-
-2. Disko input exists in flake.lock:
-   nix flake metadata --json | jq '.locks.nodes | has("disko")'
-
-3. genImages function exists:
-   nix eval '.#lib.genImages'
-
-4. Module options file exists and is valid Nix:
-   cat modules/images/default.nix (verify structure)
-
-5. Default disko schema file exists:
-   cat modules/images/disko-default.nix (verify structure)
-
-6. All changes are committed:
-   git status (should be clean)
-
-7. Git log shows the expected commits for this phase
-
-Report: PASS or FAIL with specific details on any failures.
+Report PASS or FAIL with details.
 ```
 
-**On pass:** Tag `v1.1.0-image-phase-1` and proceed to Phase 2.
-**On fail:** Identify specific failures, fix, re-verify.
+**On pass:** Tag `v1.1.0-image-phase-1`.
+**On fail:** Fix and re-verify.
 
 ---
 
@@ -271,45 +288,43 @@ Report: PASS or FAIL with specific details on any failures.
 **Prompt:**
 ```
 Update the generateImages overlay function in
-/speed-storage/repo/DarthPJB/nixinate/flake.nix to build actual raw disk images.
+/speed-storage/repo/DarthPJB/nixinate/flake.nix to build raw disk images.
 
-Replace the stub in generateImages with:
+KEY ARCHITECTURE: Raw images read from the user's EXISTING nixosConfiguration.
+Do NOT create a new nixpkgs.lib.nixosSystem. The user's config already has
+disko imported (via nixinate.nixosModules.image-gen) and disko.devices defined
+(either their own or the nixinate default).
+
+Follow the same pattern as generateApps — read from flake.nixosConfigurations:
 
 generateImages = flake:
   let
     machines = builtins.attrNames flake.nixosConfigurations;
-    validMachines = final.lib.remove "" (final.lib.forEach machines
-      (x: final.lib.optionalString
-        (flake.nixosConfigurations."${x}"._module.args ? nixinate) "${x}"));
+    validMachines = final.lib.filter (x: x != "")
+      (final.lib.forEach machines (x:
+        final.lib.optionalString
+          (flake.nixosConfigurations."${x}"._module.args ? nixinate) "${x}"));
     mkImagePackages = machine:
       let
         userConfig = flake.nixosConfigurations.${machine};
         imagesConfig = userConfig._module.args.nixinate.images or {};
         rawEnabled = imagesConfig.raw.enable or true;
         system = userConfig.config.nixpkgs.hostPlatform.system;
-
-        rawDerivedConfig = if rawEnabled then
-          (nixpkgs.lib.nixosSystem {
-            inherit system;
-            modules = [
-              disko.nixosModules.disko
-              ./modules/images/default.nix
-              ./modules/images/disko-default.nix
-              { _module.args.nixinate = userConfig._module.args.nixinate; }
-            ];
-          })
-        else null;
       in
         (if rawEnabled then {
-          "${machine}-raw-image" = rawDerivedConfig.config.system.build.diskoImages;
+          "${machine}-raw-image" = userConfig.config.system.build.diskoImages;
         } else {});
   in
     builtins.foldl' (a: b: a // b) {} (builtins.map mkImagePackages validMachines);
 
-Commit: "feat: wire raw disk image building via disko in generateImages overlay"
+The user's config MUST import nixinate.nixosModules.image-gen for disko
+to be available. This is the user's responsibility — same as importing
+any other NixOS module.
+
+Commit: "feat: wire raw disk image reading from user's nixosConfiguration"
 ```
 
-**Verify:** `nix eval` shows the package attribute exists (build may not work yet without a test config).
+**Verify:** `nix eval` shows the package attribute exists.
 
 ### Step 2.2: Add zstd compression as derived package
 
@@ -331,13 +346,22 @@ raw-image-zstd = if rawEnabled then
     installPhase = ''
       mkdir -p $out
       zstd -3 -T0 -v -o $out/image.raw.zst \
-        ${rawDerivedConfig.config.system.build.diskoImages}/installer.raw
+        ${userConfig.config.system.build.diskoImages}/installer.raw
     '';
   }
 else null;
 
+This references userConfig directly — no derived config, no self.packages.
 Level 3: 100x faster than level 19, <3% size difference.
 -T0: parallel compression using all cores.
+
+NOTE: The output filename (installer.raw) depends on the disko disk key name.
+If the user defines disko.devices.disk.main, the output will be main.raw.
+If they define disko.devices.disk.installer, it will be installer.raw.
+The default schema uses "main", so the default output is main.raw.
+
+Adjust the path accordingly — check what disko actually outputs for the
+default schema.
 
 Commit: "feat: add zstd-compressed raw image derivation (level 3, parallel)"
 ```
@@ -355,28 +379,19 @@ Verify Phase 2 (Raw Image Output) of the nixinate image generation implementatio
 Working directory: /speed-storage/repo/DarthPJB/nixinate
 Branch: feat/image-generation
 
-Check the following:
+Check:
+1. nix flake check --no-build (flake evaluates)
+2. grep -n "raw-image" flake.nix (raw image referenced)
+3. grep -n "raw-image-zstd" flake.nix (zstd variant referenced)
+4. grep -n "diskoImages" flake.nix (reads from user's config)
+5. grep -n "zstd -3 -T0" flake.nix (correct compression settings)
+6. grep -n "userConfig.config.system.build" flake.nix (reads from existing config, NOT new nixosSystem)
+7. git status (clean)
 
-1. Flake evaluates:
-   nix flake check --no-build
-
-2. generateImages produces raw-image and raw-image-zstd attributes:
-   nix eval --json '.#lib.genImages.x86_64-linux' 2>/dev/null || true
-   (Check the structure has machine-raw-image keys)
-
-3. The overlay's generateImages function references diskoImages:
-   grep -n "diskoImages" flake.nix
-
-4. The zstd derivation uses level 3 and -T0:
-   grep -n "zstd -3 -T0" flake.nix
-
-5. All changes committed:
-   git status (clean)
-
-Report: PASS or FAIL with details.
+Report PASS or FAIL with details.
 ```
 
-**On pass:** Tag `v1.1.0-image-phase-2` and proceed to Phase 3.
+**On pass:** Tag `v1.1.0-image-phase-2`.
 **On fail:** Fix and re-verify.
 
 ---
@@ -397,6 +412,7 @@ Create the installer NixOS module at
 /speed-storage/repo/DarthPJB/nixinate/modules/images/installer.nix.
 
 This configures a minimal bootable system for the auto-installer.
+It does NOT include the user's desktop/apps/auth — it's a separate, minimal system.
 
 Reference: /speed-storage/repo/SQUIRGLE_MEN/nix-workstation-image/machines/installer/default.nix
 
@@ -464,6 +480,10 @@ Adapt to be generic:
 IMPORTANT: Swap is already in the disko schema (embedded in raw image).
 Do NOT create swap post-dd. Only expand root.
 
+The script runs on every boot — this is the intended behavior. The user
+removes the USB after installation completes and the system shuts down.
+If the USB is left in, the installer runs again (also intended).
+
 Commit: "feat: add auto-dd-install shell script with safety validations"
 ```
 
@@ -480,6 +500,8 @@ Create the auto-dd systemd service module at
 /speed-storage/repo/DarthPJB/nixinate/modules/images/auto-dd.nix.
 
 Reference: /speed-storage/repo/SQUIRGLE_MEN/nix-workstation-image/machines/installer-auto-dd/default.nix
+
+Use pkgs.writeShellApplication (NOT writeShellScriptBin) per prime directive 18.
 
 { config, lib, pkgs, ... }:
 let
@@ -520,12 +542,13 @@ in
   };
 }
 
-Keep it generic. Use lib.mkDefault for settings users might override.
+NOTE: The service runs on every boot (wantedBy multi-user.target). This is
+the intended behavior — the user removes the USB after installation.
 
 Commit: "feat: add auto-dd systemd service module with kmscon installer UX"
 ```
 
-**Verify:** File exists, references auto-dd-install.sh correctly.
+**Verify:** File exists, uses writeShellApplication.
 
 ### Step 3.4: Wire installer image building in generateImages
 
@@ -537,20 +560,26 @@ Commit: "feat: add auto-dd systemd service module with kmscon installer UX"
 Add installer image building to the generateImages overlay in
 /speed-storage/repo/DarthPJB/nixinate/flake.nix.
 
+The installer IS a separate nixosSystem — it's a different system entirely
+(minimal boot shell + auto-dd, not the user's desktop). Create it using
+nixpkgs.lib.nixosSystem with the installer modules.
+
 In mkImagePackages, add:
 
 installerEnabled = imagesConfig.installer.enable or true;
 
+# Installer is a SEPARATE system — not the user's config
 installerDerivedConfig = if installerEnabled then
-  (nixpkgs.lib.nixosSystem {
+  (final.lib.nixosSystem {
     inherit system;
     modules = [
       disko.nixosModules.disko
       ./modules/images/default.nix
       ./modules/images/installer.nix
       ./modules/images/auto-dd.nix
-      { _module.args.nixinate = userConfig._module.args.nixinate; }
-      { disko.devices.disk.autoinstaller = {
+      # Minimal disko schema for the installer USB itself
+      {
+        disko.devices.disk.autoinstaller = {
           device = "/dev/null";
           type = "disk";
           content = {
@@ -576,8 +605,8 @@ installerDerivedConfig = if installerEnabled then
               };
             };
           };
-          imageSize = "7800M";
         };
+        disko.devices.disk.autoinstaller.imageSize = "7800M";
       }
     ];
   })
@@ -596,7 +625,17 @@ installer-image = if installerEnabled then
   ''
 else null;
 
-Add both to the returned attrset alongside raw-image and raw-image-zstd.
+NOTE: Uses final.lib.nixosSystem (not nixpkgs.lib.nixosSystem) because
+nixpkgs is not in scope inside the overlay. final.lib has nixosSystem.
+
+The installer uses its own disk key ("autoinstaller") to avoid collision
+with the user's disk key ("main" or whatever they defined).
+
+The zstd payload is referenced via self.packages — this is safe because
+the installer-image depends on raw-image-zstd which is built in the same
+generateImages call. The dependency is explicit.
+
+Add installer-image to the returned attrset alongside raw-image and raw-image-zstd.
 
 Commit: "feat: wire installer image building with diskoImagesScript --post-format-files"
 ```
@@ -614,35 +653,21 @@ Verify Phase 3 (Installer Image) of the nixinate image generation implementation
 Working directory: /speed-storage/repo/DarthPJB/nixinate
 Branch: feat/image-generation
 
-Check the following:
+Check:
+1. nix flake check --no-build (flake evaluates)
+2. cat modules/images/installer.nix (valid Nix, has efiInstallAsRemovable)
+3. cat modules/images/auto-dd.nix (uses writeShellApplication, has runtimeInputs)
+4. cat modules/images/auto-dd-install.sh (bash -n passes)
+5. grep -n "installer-image" flake.nix (installer output wired)
+6. grep -n "diskoImagesScript" flake.nix (uses disko script for payload embedding)
+7. grep -n "post-format-files" flake.nix (embeds compressed raw image)
+8. grep -n "final.lib.nixosSystem" flake.nix (installer uses final.lib, not nixpkgs)
+9. git status (clean)
 
-1. Flake evaluates:
-   nix flake check --no-build
-
-2. Installer module exists and is valid:
-   cat modules/images/installer.nix
-   cat modules/images/auto-dd.nix
-   cat modules/images/auto-dd-install.sh
-
-3. Auto-dd script passes syntax check:
-   bash -n modules/images/auto-dd-install.sh
-
-4. generateImages references installer-image:
-   grep -n "installer-image" flake.nix
-
-5. diskoImagesScript is used for installer:
-   grep -n "diskoImagesScript" flake.nix
-
-6. --post-format-files is used to embed payload:
-   grep -n "post-format-files" flake.nix
-
-7. All changes committed:
-   git status (clean)
-
-Report: PASS or FAIL with details.
+Report PASS or FAIL with details.
 ```
 
-**On pass:** Tag `v1.1.0-image-phase-3` and proceed to Phase 4.
+**On pass:** Tag `v1.1.0-image-phase-3`.
 **On fail:** Fix and re-verify.
 
 ---
@@ -662,40 +687,34 @@ Report: PASS or FAIL with details.
 Add QEMU QCOW2 and ISO image outputs to the generateImages overlay in
 /speed-storage/repo/DarthPJB/nixinate/flake.nix.
 
-In mkImagePackages, add:
+QEMU: Read from the user's existing config (same pattern as raw image).
+The user must have qemu-guest profile in their config for this to work.
 
 qemuEnabled = imagesConfig.qemu.enable or false;
-isoEnabled = imagesConfig.iso.enable or false;
-
 qemu-image = if qemuEnabled then
-  (nixpkgs.lib.nixosSystem {
-    inherit system;
-    modules = [
-      disko.nixosModules.disko
-      ./modules/images/default.nix
-      ./modules/images/disko-default.nix
-      { _module.args.nixinate = userConfig._module.args.nixinate; }
-      "${nixpkgs}/nixos/modules/profiles/qemu-guest.nix"
-    ];
-  }).config.system.build.images.qemu
+  userConfig.config.system.build.images.qemu
 else null;
 
+ISO: Build a separate nixosSystem using the installercd profile.
+This is the standard nixpkgs way to produce a bootable ISO.
+
+isoEnabled = imagesConfig.iso.enable or false;
 iso-image = if isoEnabled then
-  (nixpkgs.lib.nixosSystem {
+  (final.lib.nixosSystem {
     inherit system;
     modules = [
-      disko.nixosModules.disko
-      ./modules/images/default.nix
-      ./modules/images/disko-default.nix
-      { _module.args.nixinate = userConfig._module.args.nixinate; }
-      { virtualisation.virtualbox.guest.enable = true; }
+      "${final.path}/nixos/modules/profiles/installercd.nix"
     ];
   }).config.system.build.images.iso
 else null;
 
-Add both to the returned attrset. Defaults are false — user must explicitly enable.
+NOTE: ISO uses "${final.path}/nixos/modules/profiles/installercd.nix" —
+this is the correct nixpkgs module for ISO generation.
+Do NOT use virtualisation.virtualbox.guest.enable.
 
-Commit: "feat: add QEMU QCOW2 and ISO image outputs (images.qemu/iso.enable)"
+Add both to the returned attrset. Defaults are false.
+
+Commit: "feat: add QEMU QCOW2 and ISO image outputs"
 ```
 
 **Verify:** Package attributes exist when enabled.
@@ -711,28 +730,19 @@ Verify Phase 4 (QEMU + ISO) of the nixinate image generation implementation.
 Working directory: /speed-storage/repo/DarthPJB/nixinate
 Branch: feat/image-generation
 
-Check the following:
+Check:
+1. nix flake check --no-build
+2. grep -n "qemu-image" flake.nix
+3. grep -n "iso-image" flake.nix
+4. grep -n "installercd.nix" flake.nix (correct ISO approach)
+5. grep -n "qemu.enable or false" flake.nix (defaults off)
+6. grep -n "iso.enable or false" flake.nix (defaults off)
+7. git status (clean)
 
-1. Flake evaluates:
-   nix flake check --no-build
-
-2. QEMU output references images.qemu:
-   grep -n "qemu-image" flake.nix
-
-3. ISO output references images.iso:
-   grep -n "iso-image" flake.nix
-
-4. Both default to false:
-   grep -n "qemu.enable or false" flake.nix
-   grep -n "iso.enable or false" flake.nix
-
-5. All changes committed:
-   git status (clean)
-
-Report: PASS or FAIL with details.
+Report PASS or FAIL with details.
 ```
 
-**On pass:** Tag `v1.1.0-image-phase-4` and proceed to Phase 5.
+**On pass:** Tag `v1.1.0-image-phase-4`.
 **On fail:** Fix and re-verify.
 
 ---
@@ -742,80 +752,79 @@ Report: PASS or FAIL with details.
 **Tag:** `v1.1.0-image-phase-5`
 **Dependencies:** Phase 2 complete and tagged
 
-### Step 5.1: Create closure size parsing helper
+### Step 5.1: Create size parsing helper
 
 **Agent:** bellana-deepseek
 **Files:** `lib/closure-size.nix` (new)
 
 **Prompt:**
 ```
-Create a closure size helper at
+Create a size parsing helper at
 /speed-storage/repo/DarthPJB/nixinate/lib/closure-size.nix.
 
 Create the lib/ directory if needed.
 
-This helper parses imageSize/espSize/swapSize strings and computes available
-root partition space:
-
 { lib, ... }:
 let
+  # Parse size strings like "20G", "1024M", "8G" to bytes
   parseSize = str:
     let
-      num = builtins.fromJSON (builtins.head (builtins.match "([0-9]+)" str));
-      suffix = builtins.head (builtins.match "[0-9]+(.)" str);
+      matchResult = builtins.match "([0-9]+)([GMKgmk])?" str;
+      num = builtins.fromJSON (builtins.head matchResult);
+      suffix = if builtins.length matchResult > 1
+               then builtins.elemAt matchResult 1
+               else null;
+      multiplier = if suffix == "G" || suffix == "g" then 1024*1024*1024
+        else if suffix == "M" || suffix == "m" then 1024*1024
+        else if suffix == "K" || suffix == "k" then 1024
+        else 1; # bytes if no suffix
     in
-      num * (if suffix == "G" then 1024*1024*1024
-        else if suffix == "M" then 1024*1024
-        else if suffix == "K" then 1024
-        else builtins.abort "Unknown size suffix: ${str}");
+      num * multiplier;
 in
 {
-  # Export parseSize for use by other modules
   nixinate.lib.parseSize = parseSize;
 }
+
+NOTE: Use builtins.match with optional suffix group, not separate regex calls.
+Handle both uppercase and lowercase suffixes.
 
 Commit: "feat: add size parsing helper for image size calculations"
 ```
 
-**Verify:** File exists, parseSize function is defined.
+**Verify:** File exists, parseSize handles "20G", "1024M", "8G".
 
-### Step 5.2: Wire closure size assertion into raw image build
+### Step 5.2: Wire size validation into raw image build
 
 **Agent:** bellana-deepseek
 **Files:** `flake.nix`
 
 **Prompt:**
 ```
-Add a closure size pre-flight check to the raw image build in
+Add image size validation to the raw image build in
 /speed-storage/repo/DarthPJB/nixinate/flake.nix.
 
-In the generateImages overlay, before building the raw image, add a
-build-time assertion that checks if the configured imageSize is reasonable.
-
-The simplest approach for v1: add a warning derivation that runs before
-the image build and checks closure size vs available root space.
+In the generateImages overlay, before building the raw image, validate
+that the configured imageSize is large enough for ESP + swap + some root space.
 
 In mkImagePackages, add:
 
-# Size check
-imageSizeBytes = (import ./lib/closure-size.nix { inherit lib; }).nixinate.lib.parseSize
-  (imagesConfig.raw.imageSize or "20G");
-espSizeBytes = (import ./lib/closure-size.nix { inherit lib; }).nixinate.lib.parseSize
-  (imagesConfig.raw.espSize or "1024M");
-swapSizeBytes = (import ./lib/closure-size.nix { inherit lib; }).nixinate.lib.parseSize
-  (imagesConfig.raw.swapSize or "8G");
+# Size validation
+sizeLib = import ./lib/closure-size.nix { inherit (final) lib; };
+parseSize = sizeLib.nixinate.lib.parseSize;
+imageSizeBytes = parseSize (imagesConfig.raw.imageSize or "20G");
+espSizeBytes = parseSize (imagesConfig.raw.espSize or "1024M");
+swapSizeBytes = parseSize (imagesConfig.raw.swapSize or "8G");
 rootSizeBytes = imageSizeBytes - espSizeBytes - swapSizeBytes;
-
-# Abort if root partition would be negative (bad config)
 sizeValid = rootSizeBytes > 0;
 
 Then wrap the raw-image output:
 raw-image = if rawEnabled then
-  (assert sizeValid; rawDerivedConfig.config.system.build.diskoImages)
+  assert sizeValid; userConfig.config.system.build.diskoImages
 else null;
 
-This catches obviously bad sizing at eval time. A deeper closure-vs-image
-check (comparing actual closure size) can be added in a future iteration.
+NOTE: assert is a STATEMENT, not an expression in parens.
+The correct syntax is: assert sizeValid; <expression>
+NOT: (assert sizeValid; <expression>)
 
 Commit: "feat: add build-time image size validation before raw image build"
 ```
@@ -833,28 +842,18 @@ Verify Phase 5 (Closure Size Check) of the nixinate image generation implementat
 Working directory: /speed-storage/repo/DarthPJB/nixinate
 Branch: feat/image-generation
 
-Check the following:
+Check:
+1. nix flake check --no-build
+2. cat lib/closure-size.nix (parseSize function, handles G/M/K)
+3. grep -n "parseSize" flake.nix (wired into generateImages)
+4. grep -n "assert sizeValid" flake.nix (correct assert syntax)
+5. grep -n "rootSizeBytes" flake.nix (computes available root space)
+6. git status (clean)
 
-1. Flake evaluates:
-   nix flake check --no-build
-
-2. Size parsing helper exists:
-   cat lib/closure-size.nix
-
-3. parseSize function handles G, M, K suffixes:
-   grep -n "suffix ==" lib/closure-size.nix
-
-4. Size validation is wired into generateImages:
-   grep -n "sizeValid" flake.nix
-   grep -n "rootSizeBytes" flake.nix
-
-5. All changes committed:
-   git status (clean)
-
-Report: PASS or FAIL with details.
+Report PASS or FAIL with details.
 ```
 
-**On pass:** Tag `v1.1.0-image-phase-5` and proceed to Phase 6.
+**On pass:** Tag `v1.1.0-image-phase-5`.
 **On fail:** Fix and re-verify.
 
 ---
@@ -879,7 +878,7 @@ showing how to use image generation.
   inputs = {
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0";
     nixinate = {
-      url = "github:Bargman-Tech/nixinate";
+      url = "github:DarthPJB/nixinate";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     disko = {
@@ -900,6 +899,7 @@ showing how to use image generation.
       modules = [
         ./configuration.nix
         disko.nixosModules.disko
+        nixinate.nixosModules.image-gen
         {
           _module.args.nixinate = {
             host = "10.0.0.1";
@@ -919,6 +919,9 @@ showing how to use image generation.
     };
   };
 }
+
+NOTE: Uses github:DarthPJB/nixinate (NOT Bargman-Tech).
+User imports BOTH disko.nixosModules.disko AND nixinate.nixosModules.image-gen.
 
 Commit: "docs: add example flake with image generation configuration"
 ```
@@ -946,6 +949,15 @@ nixosConfiguration. Add to your flake:
 packages = nixinate.lib.genImages.x86_64-linux self;
 ```
 
+And import the image module in your nixosConfiguration:
+
+```nix
+imports = [
+  disko.nixosModules.disko
+  nixinate.nixosModules.image-gen
+];
+```
+
 ### Available Outputs
 
 | Output | Command | Description |
@@ -954,7 +966,7 @@ packages = nixinate.lib.genImages.x86_64-linux self;
 | Compressed | `nix build .#<machine>-raw-image-zstd` | zstd-compressed (level 3) |
 | Installer | `nix build .#<machine>-installer-image` | Bootable USB installer |
 | QEMU | `nix build .#<machine>-qemu-image` | QCOW2 (requires qemu profile) |
-| ISO | `nix build .#<machine>-iso-image` | Bootable ISO (requires virtualbox) |
+| ISO | `nix build .#<machine>-iso-image` | Bootable ISO |
 
 ### Configuration
 
@@ -991,30 +1003,16 @@ Verify Phase 6 (Docs + Example) of the nixinate image generation implementation.
 Working directory: /speed-storage/repo/DarthPJB/nixinate
 Branch: feat/image-generation
 
-Check the following:
+Check:
+1. cat examples/flake-with-images.nix (exists, shows genImages)
+2. grep -n "genImages" examples/flake-with-images.nix
+3. grep -n "DarthPJB/nixinate" examples/flake-with-images.nix (correct URL)
+4. grep -n "Image Generation" README.md
+5. grep -n "raw-image" README.md
+6. grep -n "image-gen" README.md (shows module import)
+7. git status (clean)
 
-1. Example flake exists:
-   cat examples/flake-with-images.nix
-
-2. Example shows genImages usage:
-   grep -n "genImages" examples/flake-with-images.nix
-
-3. Example shows images config:
-   grep -n "images" examples/flake-with-images.nix
-
-4. README has image generation section:
-   grep -n "Image Generation" README.md
-
-5. README shows package commands:
-   grep -n "raw-image" README.md
-
-6. All changes committed:
-   git status (clean)
-
-7. Plan document exists:
-   cat docs/image-generation-plan.md | head -5
-
-Report: PASS or FAIL with details.
+Report PASS or FAIL with details.
 ```
 
 **On pass:** Tag `v1.1.0-image-phase-6`. All phases complete.
@@ -1033,4 +1031,19 @@ Report: PASS or FAIL with details.
 | 5. Closure Check | `v1.1.0-image-phase-5` | 2 | bellana-deepseek | tpol-minimax |
 | 6. Docs + Example | `v1.1.0-image-phase-6` | 2 | bellana-deepseek | tpol-minimax |
 
-**Total:** 16 steps, 6 verification gates, 6 tags.
+**Total:** 15 steps, 6 verification gates, 6 tags.
+
+---
+
+## Changes from v1 (Based on Adversarial Reviews)
+
+1. **Raw images read from user's existing config** — no derived nixosSystem
+   (fixes tpol-gpt concern about not including user's config)
+2. **Only installer uses separate nixosSystem** — it's a genuinely different system
+3. **Fixed Nix syntax** — assert as statement, lib.filter not lib.remove,
+   final.lib.nixosSystem not nixpkgs.lib.nixosSystem
+4. **Fixed ISO approach** — uses installercd.nix, not virtualbox guest
+5. **Fixed example URL** — DarthPJB/nixinate, not Bargman-Tech
+6. **Disko default uses lib.mkDefault** — not brittle mkIf == {} check
+7. **Uses writeShellApplication** — per prime directive 18
+8. **Auto-dd re-run preserved** — known good behavior from reference implementation
