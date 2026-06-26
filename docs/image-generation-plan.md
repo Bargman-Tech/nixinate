@@ -77,14 +77,13 @@ images = {
   installer = {
     enable = true;
     payload = "image";         # embeds the raw image as payload
-    swapSize = "16G";          # swap partition size on target
     minDiskSize = "64G";       # minimum target disk size
   };
 };
 ```
 
-These extensions are explicitly deferred. v1 uses hardcoded sane defaults
-(matching the reference implementation).
+These extensions are explicitly deferred. v1 uses the core sizing parameters
+(`imageSize`, `espSize`, `swapSize`) with sane defaults.
 
 ---
 
@@ -124,21 +123,22 @@ disko.devices.disk.main = {
   content = {
     type = "gpt";
     partitions = {
-      swap = {
-        size = "16G";
-        content = {
-          type = "swap";
-          randomEncryption = true;
-        };
-      };
       ESP = {
+        # ESP MUST be first — UEFI requires ESP in the first 1M block
         type = "EF00";
-        size = "512M";
+        size = "1024M";
         content = {
           type = "filesystem";
           format = "vfat";
           mountpoint = "/boot";
           mountOptions = [ "umask=0077" ];
+        };
+      };
+      swap = {
+        size = "8G";
+        content = {
+          type = "swap";
+          randomEncryption = true;
         };
       };
       root = {
@@ -154,9 +154,32 @@ disko.devices.disk.main = {
 };
 ```
 
-**Why swap at disk start:** The root partition is last and can therefore
-expand to fill whatever space remains on the target disk. If swap were
-at the end, `growpart` could not expand root past it.
+**Partition order:** ESP (first, UEFI requirement) → swap → root (last,
+can expand to fill target disk).
+
+### Configurable Parameters
+
+The default disko schema provides sane defaults, but users can override
+the principal sizing parameters:
+
+```nix
+images = {
+  raw = {
+    enable = true;
+    imageSize = "20G";    # total raw image size (default: 20G)
+    espSize = "1024M";    # ESP partition size (default: 1024M)
+    swapSize = "8G";      # swap partition size (default: 8G)
+  };
+};
+```
+
+**Defaults:**
+- `imageSize = "20G"` — total disk image size
+- `espSize = "1024M"` — ESP partition (UEFI requirement, minimum 512M)
+- `swapSize = "8G"` — swap partition (minimum for reasonable operation)
+
+**Known issue:** If the raw image size is smaller than the final closure,
+the image will not fit. This is a known problem — to be discussed separately.
 
 ### Output Generation
 
@@ -228,7 +251,7 @@ nixinate/
 ├── modules/
 │   └── images/
 │       ├── default.nix          # image generation orchestrator
-│       ├── disko-default.nix    # default disko schema (GPT/swap/ESP/ext4)
+│       ├── disko-default.nix    # default disko schema (GPT/ESP/swap/ext4)
 │       ├── installer.nix        # installer NixOS module (boot, grub, plymouth)
 │       ├── auto-dd.nix          # auto-dd-install systemd service module
 │       └── auto-dd-install.sh   # dd + post-processing shell script
@@ -261,7 +284,7 @@ User's nixosConfiguration.myMachine
     │       │
     │       ├─── Add disko module if missing
     │       ├─── Add default disko schema if missing
-    │       │       (GPT: swap → ESP → root ext4)
+    │       │       (GPT: ESP → swap → root ext4)
     │       └─── Build config.system.build.diskoImages
     │               │
     │               ├─── packages.<machine>-raw-image       (uncompressed)
@@ -397,7 +420,7 @@ The reference implementation produces:
 - Implement `genImages` function (parallel to `genDeploy`)
 - Implement `images.raw.enable` → `diskoImages` output
 - Handle disko import (add if missing, idempotent)
-- Default disko schema (GPT: swap → ESP → root ext4)
+- Default disko schema (GPT: ESP → swap → root ext4)
 - Zstd compression (level 3) derived from raw output
 - **Exit:** `nix build .#packages.<machine>-raw-image` produces a raw disk image,
   `nix build .#packages.<machine>-raw-image-zstd` produces the compressed version
