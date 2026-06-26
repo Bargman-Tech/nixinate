@@ -161,41 +161,33 @@ partprobe "$TARGET" || true
 udevadm settle --timeout=10 || true
 
 # === POST-DD: Expand root into available space ===
-# Swap is already embedded in the raw image from the disko schema.
-# We only expand root — no swap creation here.
+# Disk layout from disko schema: ESP(p1) → swap(p2) → root(p3)
+# Swap is embedded in the raw image. Root is the last partition and can expand.
 
 echo "Disk size: ${DISK_SIZE_GB}GB"
 
-# Remove existing swap partition (p3) if present, so root can expand past it
-if parted -m -s "$TARGET" unit s print | awk -F: '$1=="3"{found=1} END{exit found?0:1}'; then
-  echo "Found existing p3 (swap); removing to allow root expansion"
-  parted -s "$TARGET" rm 3
-  partprobe "$TARGET" || true
-  udevadm settle --timeout=10 || true
-fi
-
-# Grow root partition (p2) to fill remaining disk space
-echo "=== Growing root partition (p2) to fill disk ==="
-if ! growpart "$TARGET" 2; then
+# Grow root partition (p3 — last partition) to fill remaining disk space
+echo "=== Growing root partition (p3) to fill disk ==="
+if ! growpart "$TARGET" 3; then
   echo "ERROR: growpart failed"
   parted -s "$TARGET" unit MiB print free || true
   exit 1
 fi
 
-if [ ! -b "${TARGET}p2" ]; then
-  echo "ERROR: ${TARGET}p2 missing after growpart"
+if [ ! -b "${TARGET}p3" ]; then
+  echo "ERROR: ${TARGET}p3 missing after growpart"
   exit 1
 fi
 
 # Resize ext4 filesystem to fill grown partition
 echo "=== Resizing root filesystem ==="
 e2fsck_exit=0
-e2fsck -fy "${TARGET}p2" || e2fsck_exit=$?
+e2fsck -fy "${TARGET}p3" || e2fsck_exit=$?
 if [ $e2fsck_exit -gt 1 ]; then
   echo "ERROR: e2fsck failed with exit code $e2fsck_exit"
   exit 1
 fi
-resize2fs "${TARGET}p2"
+resize2fs "${TARGET}p3"
 
 sync
 udevadm settle --timeout=10
