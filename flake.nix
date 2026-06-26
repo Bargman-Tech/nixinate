@@ -54,7 +54,12 @@
       };
       lib.genDeploy = forAllSystems (system: pkgs: nixpkgsFor.${system}.generateApps);
       lib.genImages = forAllSystems (system: pkgs: nixpkgsFor.${system}.generateImages);
-      nixosModules.image-gen = ./modules/images/default.nix;
+      nixosModules.image-gen = {
+        imports = [
+          disko.nixosModules.disko
+          ./modules/images/default.nix
+        ];
+      };
       overlays.default = final: prev:
         let
           hasNg = final.lib.hasAttr "nixos-rebuild-ng" prev;
