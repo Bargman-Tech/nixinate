@@ -20,6 +20,28 @@
       nixpkgsFor = forAllSystems (system: pkgs: import nixpkgs { inherit system; overlays = [ self.overlays.default ]; });
     in rec
     {
+      schemas = {
+        lib = {
+          version = 1;
+          doc = "Nixinate library functions (genDeploy, genImages)";
+          inventory = output: {
+            children = builtins.mapAttrs (system: fn: {
+              what = "library function";
+              shortDescription = "Nixinate functions for ${system}";
+            }) output;
+          };
+        };
+        overlays = {
+          version = 1;
+          doc = "Nixpkgs overlays provided by nixinate";
+          inventory = output: {
+            children = builtins.mapAttrs (name: overlay: {
+              what = "overlay";
+              shortDescription = "Overlay: ${name}";
+            }) output;
+          };
+        };
+      };
       lib.genDeploy = forAllSystems (system: pkgs: nixpkgsFor.${system}.generateApps);
       lib.genImages = forAllSystems (system: pkgs: nixpkgsFor.${system}.generateImages);
       overlays.default = final: prev:
