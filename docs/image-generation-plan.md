@@ -138,7 +138,6 @@ disko.devices.disk.main = {
         size = "8G";
         content = {
           type = "swap";
-          randomEncryption = true;
         };
       };
       root = {
@@ -180,6 +179,31 @@ images = {
 
 **Known issue:** If the raw image size is smaller than the final closure,
 the image will not fit. This is a known problem — to be discussed separately.
+
+### Image Size vs Closure Size
+
+Disko builds images in a QEMU VM. If the configured `imageSize` is smaller
+than the NixOS closure, the build fails with buried "out of space" errors
+in the build output. The error is not obvious — it looks like a generic
+build failure.
+
+**Mitigation strategy:** Before building the image, nixinate should compute
+the closure size via `closureInfo` and compare it against the configured
+`imageSize`. If the closure won't fit, fail early with a clear error:
+
+```
+ERROR: NixOS closure (12.4G) exceeds configured imageSize (10G).
+Increase images.raw.imageSize or reduce your system closure.
+  Closure: 12.4G
+  Image:   10G
+  Swap:    8G
+  ESP:     1G
+  Root:    1G (too small)
+```
+
+This is a build-time check, not a runtime check. It runs before the QEMU
+VM is spawned, so the user gets immediate feedback rather than waiting for
+a VM build to fail.
 
 ### Output Generation
 
