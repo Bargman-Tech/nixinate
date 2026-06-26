@@ -26,6 +26,23 @@ Image generation is controlled via the existing `_module.args.nixinate` block.
 Boolean `enable` flags control which image types are produced. Defaults are
 sane — a raw disk image and an installer are produced unless explicitly disabled.
 
+To enable image outputs, the user adds a line to their flake:
+
+```nix
+outputs = { self, nixpkgs, nixinate }: {
+  apps = nixinate.lib.genDeploy.x86_64-linux self;
+  packages = nixinate.lib.genImages.x86_64-linux self;  # <-- new
+
+  nixosConfigurations.myMachine = nixpkgs.lib.nixosSystem { ... };
+};
+```
+
+`genImages` reads `_module.args.nixinate` from each `nixosConfiguration` and
+produces the requested image packages. Users who don't add this line get no
+image outputs — the `images` config is inert without it.
+
+### Module Args
+
 ```nix
 _module.args.nixinate = {
   host = "10.0.0.1";
@@ -42,8 +59,9 @@ _module.args.nixinate = {
 ```
 
 **Defaults:** `raw` and `installer` enabled. `qemu` and `iso` disabled.
-Users who only want deployment scripts (existing behaviour) get no change —
-images are opt-in via the module args, but default-on for raw + installer.
+Adding the `images` block is optional — these are the defaults when
+`genImages` is called. Users who only want deployment scripts (existing
+behaviour) add only `genDeploy` and get no change.
 
 ### Future Extensions (not v1)
 
@@ -90,9 +108,55 @@ Disko provides the disk image generation infrastructure:
 - If the user has NOT imported disko, nixinate adds it automatically when image
   generation is enabled.
 - If the user has no disko schema (`disko.devices` not defined), nixinate provides
-  a sane default: GPT partition table, 512M ESP (vfat), root ext4 (100%).
+  a sane default: GPT partition table, swap (at disk start, so ext4 root can
+  expand), 512M ESP (vfat), root ext4 (remaining space).
 
 This is idempotent — double-importing disko is safe (NixOS modules are deduped).
+
+### Default Disko Schema
+
+When the user hasn't defined `disko.devices`, nixinate provides this layout:
+
+```nix
+disko.devices.disk.main = {
+  device = "/dev/null"; # overridden by image builder
+  type = "disk";
+  content = {
+    type = "gpt";
+    partitions = {
+      swap = {
+        size = "16G";
+        content = {
+          type = "swap";
+          randomEncryption = true;
+        };
+      };
+      ESP = {
+        type = "EF00";
+        size = "512M";
+        content = {
+          type = "filesystem";
+          format = "vfat";
+          mountpoint = "/boot";
+          mountOptions = [ "umask=0077" ];
+        };
+      };
+      root = {
+        size = "100%";
+        content = {
+          type = "filesystem";
+          format = "ext4";
+          mountpoint = "/";
+        };
+      };
+    };
+  };
+};
+```
+
+**Why swap at disk start:** The root partition is last and can therefore
+expand to fill whatever space remains on the target disk. If swap were
+at the end, `growpart` could not expand root past it.
 
 ### Output Generation
 
@@ -102,11 +166,15 @@ generates buildable package outputs:
 #### 1. Raw Disk Image (`images.raw`)
 
 **Input:** User's `nixosConfiguration` (with disko schema)
-**Output:** `packages.x86_64-linux.<machine>-raw-image`
+**Output:**
+- `packages.x86_64-linux.<machine>-raw-image` — uncompressed raw disk image
+- `packages.x86_64-linux.<machine>-raw-image-zstd` — zstd-compressed (derived from raw)
+
 **Mechanism:** `config.system.build.diskoImages`
 
 The raw image is a complete, dd-able disk image containing the user's full
-NixOS system. It is compressed with zstd (level 3, parallel) by default.
+NixOS system. The uncompressed raw image is the primary output. The
+zstd-compressed version is derived from it (simple chain: raw → zstd).
 
 #### 2. Installer Image (`images.installer`)
 
@@ -160,7 +228,7 @@ nixinate/
 ├── modules/
 │   └── images/
 │       ├── default.nix          # image generation orchestrator
-│       ├── disko-default.nix    # default disko schema (GPT/ESP+ext4)
+│       ├── disko-default.nix    # default disko schema (GPT/swap/ESP/ext4)
 │       ├── installer.nix        # installer NixOS module (boot, grub, plymouth)
 │       ├── auto-dd.nix          # auto-dd-install systemd service module
 │       └── auto-dd-install.sh   # dd + post-processing shell script
@@ -193,9 +261,13 @@ User's nixosConfiguration.myMachine
     │       │
     │       ├─── Add disko module if missing
     │       ├─── Add default disko schema if missing
+    │       │       (GPT: swap → ESP → root ext4)
     │       └─── Build config.system.build.diskoImages
-    │               └─── Compress with zstd -3 -T0
-    │                       └─── packages.<machine>-raw-image
+    │               │
+    │               ├─── packages.<machine>-raw-image       (uncompressed)
+    │               │
+    │               └─── zstd -3 -T0 (compress raw)
+    │                       └─── packages.<machine>-raw-image-zstd
     │
     ├─── images.installer.enable = true?
     │       │
@@ -208,7 +280,6 @@ User's nixosConfiguration.myMachine
     │       │       ];
     │       │       disko.devices.disk.autoinstaller = { ... };
     │       │
-    │       ├─── Build raw image → compress with zstd
     │       ├─── Build installer diskoImage with --post-format-files
     │       │       (embeds compressed raw image at /install/image.raw.zst)
     │       └─── packages.<machine>-installer-image
@@ -252,9 +323,12 @@ Key behaviours:
 - Validates target device (not mounted, not current root, size check)
 - `zstd -d -c | dd of=$TARGET bs=4M status=progress`
 - `sgdisk -e` to relocate GPT backup header
-- `growpart` + `resize2fs` to expand root
-- `mkswap` for swap partition
+- `growpart` + `resize2fs` to expand root into remaining space
 - Shutdown with user message
+
+**Swap is in the disko schema** (at disk start), not created post-dd.
+The raw image already contains swap. The ext4 root partition follows swap
+and can expand to fill the disk because it is the last partition.
 
 Target device defaults to `/dev/nvme0n1`. Future versions will support
 kernel cmdline override (`nixos.install.target=/dev/sda`).
@@ -308,7 +382,7 @@ The reference implementation produces:
 
 | Concern | Status |
 |---------|--------|
-| Post-install config injection for `nixos-rebuild` | Future. Image is a frozen snapshot. |
+| Post-install config injection for `nixos-rebuild` | Not needed. `/etc/nixos` is legacy Nix. |
 | iPXE network boot integration | Phase 6 (MNGA). |
 | Cross-arch image generation | Phase 6. disko supports binfmt. |
 | LUKS/btrfs/ZFS partition layouts | Future extension via `images.raw.partitionTable`. |
@@ -320,11 +394,13 @@ The reference implementation produces:
 
 ### M1: Raw Image Output
 - Add disko input to nixinate flake
+- Implement `genImages` function (parallel to `genDeploy`)
 - Implement `images.raw.enable` → `diskoImages` output
 - Handle disko import (add if missing, idempotent)
-- Default disko schema (GPT/ESP+ext4)
-- Zstd compression (level 3)
-- **Exit:** `nix build .#packages.<machine>-raw-image` produces a compressed raw disk image
+- Default disko schema (GPT: swap → ESP → root ext4)
+- Zstd compression (level 3) derived from raw output
+- **Exit:** `nix build .#packages.<machine>-raw-image` produces a raw disk image,
+  `nix build .#packages.<machine>-raw-image-zstd` produces the compressed version
 
 ### M2: Installer Image
 - Implement `images.installer.enable`
@@ -355,10 +431,7 @@ The reference implementation produces:
 2. **Multiple machines with different image configs?** Each `nixosConfiguration`
    has its own `_module.args.nixinate.images` block. No coupling between machines.
 
-3. **Image naming convention?** `<machine>-raw-image`, `<machine>-installer-image`,
-   etc. Consistent with reference implementation.
-
-4. **CI/CD integration?** Images are buildable packages. CI can `nix build` them
+3. **CI/CD integration?** Images are buildable packages. CI can `nix build` them
    directly. No special nixinate CI support needed.
 
 ---
