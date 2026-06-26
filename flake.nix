@@ -41,9 +41,20 @@
             }) output;
           };
         };
+        nixosModules = {
+          version = 1;
+          doc = "NixOS modules provided by nixinate";
+          inventory = output: {
+            children = builtins.mapAttrs (name: module: {
+              what = "NixOS module";
+              shortDescription = "Module: ${name}";
+            }) output;
+          };
+        };
       };
       lib.genDeploy = forAllSystems (system: pkgs: nixpkgsFor.${system}.generateApps);
       lib.genImages = forAllSystems (system: pkgs: nixpkgsFor.${system}.generateImages);
+      nixosModules.image-gen = ./modules/images/default.nix;
       overlays.default = final: prev:
         let
           hasNg = final.lib.hasAttr "nixos-rebuild-ng" prev;
