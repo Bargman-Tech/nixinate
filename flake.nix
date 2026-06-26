@@ -21,6 +21,7 @@
     in rec
     {
       lib.genDeploy = forAllSystems (system: pkgs: nixpkgsFor.${system}.generateApps);
+      lib.genImages = forAllSystems (system: pkgs: nixpkgsFor.${system}.generateImages);
       overlays.default = final: prev:
         let
           hasNg = final.lib.hasAttr "nixos-rebuild-ng" prev;
@@ -211,6 +212,16 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                 };
                 program = nixpkgs.lib.getExe (mkDeployScript { machine = x; });
               });
+        generateImages = flake:
+          let
+            machines = builtins.attrNames flake.nixosConfigurations;
+            validMachines = final.lib.remove "" (final.lib.forEach machines (x:
+              final.lib.optionalString
+                (flake.nixosConfigurations."${x}"._module.args ? nixinate) "${x}"));
+          in
+            final.lib.genAttrs validMachines (machine: {
+              # Stub — filled in subsequent phases
+            });
         };
     };
 }
