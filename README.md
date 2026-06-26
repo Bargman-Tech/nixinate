@@ -23,7 +23,7 @@ When you add nixinate to your flake, you get:
   inputs = {
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0";
     nixinate = { 
-      url = "github:DarthPJB/nixinate"; 
+      url = "github:Bargman-Tech/nixinate";
       inputs.nixpkgs.follows = "nixpkgs"; 
     };
   };
@@ -224,7 +224,9 @@ Disable if you want the remote to build with its installed Nix version, or you'r
 
 ### Cross-Architecture Deployments
 
-Cross-architecture deployments (deployer and target on different CPU architectures) are currently under exploration. Hermetic mode is automatically disabled for cross-arch targets until a tested solution is available. See the [MNGA plan](docs/MNGA-plan.md) for the roadmap.
+Nixinate automatically disables hermetic mode when deployer and target use different CPU architectures (e.g., x86_64 to aarch64). The deployment proceeds using the target's installed Nix.
+
+Same-architecture deployments are fully supported. Cross-architecture deployments work with `hermetic = false` provided the target's Nix can evaluate your flake. Cross-architecture hermetic support is planned for a future release.
 
 ## Debug Mode
 
@@ -297,11 +299,10 @@ Nixinate follows these core principles:
 
 ## MNGA Vision (Make Nixinate Great Again)
 
-Nixinate is evolving from a proof-of-concept into the canonical NixOS
-deployment tool for production systems. The philosophy: "just bash and nix" —
-minimal, functional, declarative, dependable.
+Nixinate is the canonical NixOS deployment tool for production systems. The
+philosophy: "just bash and nix" — minimal, functional, declarative, dependable.
 
-**Current deployment methods:**
+**Current deployment methods (v1.0.0):**
 
 | Method | Requires Nix on target | Requires daemon | Network | Use case |
 |--------|----------------------|-----------------|---------|----------|
@@ -309,7 +310,7 @@ minimal, functional, declarative, dependable.
 | remote | Yes | Yes | SSH | Remote build, limited deployer |
 | hermetic | No (copies Nix) | Yes (via copy) | SSH | Deterministic, legacy NixOS |
 
-**Coming next:**
+**Planned for future releases:**
 
 - **Incubation**: The sneaky but absolute tool — deploy to any Linux system
   with root SSH access. No Nix, no daemon required. Copy a nix-store into place
@@ -343,7 +344,7 @@ target. That's a game-changer.
 
 **Transfer was interrupted**
 - Re-run `nix run .#machineName`
-- Interrupted transfers resume from where they left off (not yet—phase 3 of MNGA)
+- Each phase is atomic — interrupted deployments resume from the last incomplete phase
 
 ## References
 
