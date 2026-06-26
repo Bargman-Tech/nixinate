@@ -268,10 +268,9 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                     ];
                   })
                 else null;
-              in
-                (if rawEnabled then {
-                  "${machine}-raw-image" = userConfig.config.system.build.diskoImages;
-                  "${machine}-raw-image-zstd" = final.stdenv.mkDerivation {
+                # Zstd compressed raw image (local reference for installer)
+                rawImageZstd = if rawEnabled then
+                  final.stdenv.mkDerivation {
                     name = "${machine}-raw-image-zstd";
                     buildInputs = [ final.zstd ];
                     phases = [ "installPhase" ];
@@ -281,7 +280,12 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                       zstd -3 -T0 -v -o $out/image.raw.zst \
                         ${userConfig.config.system.build.diskoImages}/main.raw
                     '';
-                  };
+                  }
+                else null;
+              in
+                (if rawEnabled then {
+                  "${machine}-raw-image" = userConfig.config.system.build.diskoImages;
+                  "${machine}-raw-image-zstd" = rawImageZstd;
                 } else {})
                 // (if installerEnabled then {
                   "${machine}-installer-image" = final.runCommand "${machine}-installer-image" {
@@ -291,7 +295,7 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                     cp ${installerDerivedConfig.config.system.build.diskoImagesScript} ./disko-image-builder
                     chmod +x ./disko-image-builder
                     ./disko-image-builder \
-                      --post-format-files ${self.packages.${final.system}.${machine}-raw-image-zstd}/image.raw.zst install/image.raw.zst
+                      --post-format-files ${rawImageZstd}/image.raw.zst install/image.raw.zst
                     cp autoinstaller.raw "$out/installer.raw"
                   '';
                 } else {});
