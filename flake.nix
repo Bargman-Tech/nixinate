@@ -347,6 +347,9 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
                   }).config.system.build.images.iso
                 else null;
               in
+                # Skip machines that don't have image-gen imported (no disko support)
+                if !(userConfig.config.system.build ? diskoImages) then {}
+                else
                 (if rawEnabled then {
                   "${machine}-raw-image" = assert sizeValid; userConfig.config.system.build.diskoImages;
                   "${machine}-raw-image-zstd" = rawImageZstd;
