@@ -226,6 +226,17 @@ main "$@" 2>&1 | ${gawk} -f ${progressAwk} | tee ${logFile}
               in
                 (if rawEnabled then {
                   "${machine}-raw-image" = userConfig.config.system.build.diskoImages;
+                  "${machine}-raw-image-zstd" = final.stdenv.mkDerivation {
+                    name = "${machine}-raw-image-zstd";
+                    buildInputs = [ final.zstd ];
+                    phases = [ "installPhase" ];
+                    installPhase = ''
+                      mkdir -p $out
+                      echo "Compressing raw image with zstd (level 3, parallel)..."
+                      zstd -3 -T0 -v -o $out/image.raw.zst \
+                        ${userConfig.config.system.build.diskoImages}/main.raw
+                    '';
+                  };
                 } else {});
           in
             builtins.foldl' (a: b: a // b) {} (builtins.map mkImagePackages validMachines);
